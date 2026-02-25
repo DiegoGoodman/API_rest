@@ -27,7 +27,6 @@ class AlunniController
     $id = $args['id'];
     $mysqli_connection = new MySQLi('my_mariadb', 'root', 'ciccio', 'scuola');
     $result = $mysqli_connection->query("DELETE FROM alunni WHERE id = $id");
-    $results = $result->fetch_all(MYSQLI_ASSOC);
 
     $response->getBody()->write("");
     return $response->withHeader("Content-type", "application/json")->withStatus(204);
