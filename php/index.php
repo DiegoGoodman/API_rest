@@ -23,5 +23,7 @@ $app->get('/hello/{name}', function (Request $request, Response $response, array
 $app->get('/alunni', "AlunniController:index");
 $app->get('/alunni/{id}', "AlunniController:read");
 $app->delete('/alunni/{id}', "AlunniController:delete");
+$app->post('/alunni', "AlunniController:create");
 
+$app->addBodyParsingMiddleware();
 $app->run();
