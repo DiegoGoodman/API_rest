@@ -4,7 +4,7 @@ use Slim\Factory\AppFactory;
 use Psr\Http\Message\ResponseInterface as Response;
 use Psr\Http\Message\ServerRequestInterface as Request;
 
-require __DIR__ . '/vendor/autoload.php';
+require __DIR__ . '/../vendor/autoload.php';
 require __DIR__ . '/controllers/AlunniController.php';
 
 $app = AppFactory::create();
@@ -24,7 +24,7 @@ $app->get('/alunni', "AlunniController:index");
 $app->get('/alunni/{id}', "AlunniController:read");
 $app->delete('/alunni/{id}', "AlunniController:delete");
 $app->post('/alunni', "AlunniController:create");
-$app->put('/alunni/{id}', [AlunniController::class, 'update']);
+$app->put('/alunni/{id}', "AlunniController:update");
 
 $app->addBodyParsingMiddleware();
 $app->run();
