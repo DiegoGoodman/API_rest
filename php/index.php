@@ -22,9 +22,9 @@ $app->get('/hello/{name}', function (Request $request, Response $response, array
 
 $app->get('/alunni', [AlunniController::class, 'index']);
 $app->get('/alunni/{id}', [AlunniController::class, 'read']);
-$app->delete('/alunni/{id}', [AlunniController::class, 'delete']);
 $app->post('/alunni', [AlunniController::class, 'create']);
 $app->put('/alunni/{id}', [AlunniController::class, 'update']);
+$app->delete('/alunni/{id}', [AlunniController::class, 'delete']);
 
 $app->addBodyParsingMiddleware();
 $app->run();

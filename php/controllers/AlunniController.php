@@ -74,4 +74,37 @@ class AlunniController
               ->withStatus(500);
       }
   }
+
+  public function update(Request $request, Response $response, $args){
+        $id = $args['id'];
+        $data = $request->getParsedBody();
+
+        if (!isset($data['nome']) || !isset($data['cognome'])) {
+            $response->getBody()->write(json_encode([
+                "error" => "Nome e cognome sono obbligatori"
+            ]));
+            return $response->withHeader("Content-type", "application/json")->withStatus(400);
+        }
+
+        $nome = $data['nome'];
+        $cognome = $data['cognome'];
+
+        $mysqli_connection = new MySQLi('my_mariadb', 'root', 'ciccio', 'scuola');
+
+        $stmt = $mysqli_connection->prepare("UPDATE alunni SET nome = ?, cognome = ? WHERE id = ?");
+        $stmt->bind_param("ssi", $nome, $cognome, $id);
+        $stmt->execute();
+
+        if ($stmt->affected_rows > 0) {
+            $response->getBody()->write(json_encode([
+                "message" => "Alunno aggiornato correttamente"
+            ]));
+            return $response->withHeader("Content-type", "application/json")->withStatus(200);
+        } else {
+            $response->getBody()->write(json_encode([
+                "error" => "Alunno non trovato o dati invariati"
+            ]));
+            return $response->withHeader("Content-type", "application/json")->withStatus(404);
+        }
+    }  
 }
