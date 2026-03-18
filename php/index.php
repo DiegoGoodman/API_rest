@@ -24,7 +24,7 @@ $app->get('/alunni', "AlunniController:index");
 $app->get('/alunni/{id}', "AlunniController:read");
 $app->delete('/alunni/{id}', "AlunniController:delete");
 $app->post('/alunni', "AlunniController:create");
-$app->put('/alunni/{id}', "AlunniController:update");
+$app->put('/alunni/{id}', [AlunniController::class, 'update']);
 
 $app->addBodyParsingMiddleware();
 $app->run();
