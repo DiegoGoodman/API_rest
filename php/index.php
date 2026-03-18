@@ -20,11 +20,11 @@ $app->get('/hello/{name}', function (Request $request, Response $response, array
     return $response;
 });
 
-$app->get('/alunni', "AlunniController:index");
-$app->get('/alunni/{id}', "AlunniController:read");
-$app->delete('/alunni/{id}', "AlunniController:delete");
-$app->post('/alunni', "AlunniController:create");
-$app->put('/alunni/{id}', "AlunniController:update");
+$app->get('/alunni', [AlunniController::class, 'index']);
+$app->get('/alunni/{id}', [AlunniController::class, 'read']);
+$app->delete('/alunni/{id}', [AlunniController::class, 'delete']);
+$app->post('/alunni', [AlunniController::class, 'create']);
+$app->put('/alunni/{id}', [AlunniController::class, 'update']);
 
 $app->addBodyParsingMiddleware();
 $app->run();
