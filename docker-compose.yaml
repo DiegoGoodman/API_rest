@@ -22,7 +22,7 @@ services:
         GID: ${MY_GID}
     environment:
       - MARIADB_ROOT_PASSWORD=ciccio
-      - MARIADB_DATABASE=scuola
+      - MARIADB_DATABASE=minibank
     volumes:
       - "./mysql:/var/lib/mysql"
       - "./build/init.sql:/docker-entrypoint-initdb.d/init.sql"
