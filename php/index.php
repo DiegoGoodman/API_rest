@@ -5,6 +5,20 @@ use Slim\Factory\AppFactory;
 
 require __DIR__ . '/vendor/autoload.php';
 
+function errorResponse(Response $response, int $code, string $message): Response
+{
+    
+    $payload = json_encode(['error' => $message]);
+
+   
+    $response->getBody()->write($payload);
+
+    
+    return $response
+        ->withStatus($code)
+        ->withHeader('Content-Type', 'application/json');
+}
+
  $app = AppFactory::create();
  $app->addBodyParsingMiddleware(); // Necessario per leggere il JSON dal body
  $app->addRoutingMiddleware();
@@ -96,7 +110,7 @@ if ($mysqli->connect_error) {
 });
 
 // POST Deposito
- $app->post('/accounts/{id}/deposits', function (Request $request, Response $response, array $args) use ($mysqli) {
+ $app->post('/accounts/{id}/deposit', function (Request $request, Response $response, array $args) use ($mysqli) {
     $accountId = (int)$args['id'];
     $data = $request->getParsedBody();
 
@@ -115,9 +129,10 @@ if ($mysqli->connect_error) {
         $stmt = $mysqli->prepare("INSERT INTO transactions (account_id, type, amount, description, balance_after) VALUES (?, 'deposit', ?, ?, ?)");
         $stmt->bind_param('idsd', $accountId, $amount, $description, $newBalance);
         $stmt->execute();
-        
+
         $mysqli->commit();
-        return $response->withStatus(201)->withHeader('Content-Type', 'application/json')->getBody()->write(json_encode(["message" => "Deposit successful", "new_balance" => $newBalance]));
+        $response->getBody()->write(json_encode(["message" => "Deposit successful", "new_balance" => $newBalance]));
+        return $response->withStatus(201)->withHeader('Content-Type', 'application/json');
     } catch (Exception $e) {
         $mysqli->rollback();
         return errorResponse($response, 500, "Transaction failed");
@@ -125,7 +140,7 @@ if ($mysqli->connect_error) {
 });
 
 // POST Prelievo
- $app->post('/accounts/{id}/withdrawals', function (Request $request, Response $response, array $args) use ($mysqli) {
+ $app->post('/accounts/{id}/withdrawal', function (Request $request, Response $response, array $args) use ($mysqli) {
     $accountId = (int)$args['id'];
     $data = $request->getParsedBody();
 
@@ -151,7 +166,9 @@ if ($mysqli->connect_error) {
         $stmt->execute();
         
         $mysqli->commit();
-        return $response->withStatus(201)->withHeader('Content-Type', 'application/json')->getBody()->write(json_encode(["message" => "Withdrawal successful", "new_balance" => $newBalance]));
+        $response = $response->withStatus(201)->withHeader('Content-Type', 'application/json');
+        $response->getBody()->write(json_encode(["message" => "Withdrawal successful","new_balance" => $newBalance]));
+        return $response;
     } catch (Exception $e) {
         $mysqli->rollback();
         return errorResponse($response, 500, "Transaction failed");
@@ -221,55 +238,123 @@ if ($mysqli->connect_error) {
 });
 
 // GET Conversione Fiat (Frankfurter) - Preso dalla traccia e adattato
- $app->get('/accounts/{id}/balance/convert/fiat', function (Request $request, Response $response, array $args) use ($mysqli) {
+$app->get('/accounts/{id}/balance/convert/fiat', function (Request $request, Response $response, array $args) use ($mysqli) {
     $accountId = (int)$args['id'];
     $params = $request->getQueryParams();
     $to = strtoupper($params['to'] ?? '');
 
-    if (!$to) return errorResponse($response, 400, "Missing target currency");
+    if (!$to) {
+        return errorResponse($response, 400, "Missing target currency");
+    }
 
-    $account = $mysqli->query("SELECT id, currency FROM accounts WHERE id = $accountId")->fetch_assoc();
-    if (!$account) return errorResponse($response, 404, "Account not found");
+    // Recupera l'account in modo sicuro
+    $stmt = $mysqli->prepare("SELECT id, currency FROM accounts WHERE id = ?");
+    if (!$stmt) {
+        return errorResponse($response, 500, "Database error: " . $mysqli->error);
+    }
+    $stmt->bind_param('i', $accountId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $account = $result->fetch_assoc();
+
+    if (!$account) {
+        return errorResponse($response, 404, "Account not found");
+    }
 
     $from = strtoupper($account['currency']);
     $balance = getCurrentBalance($mysqli, $accountId);
 
+    // Chiamata all'API Frankfurter
     $url = "https://api.frankfurter.dev/v1/latest?base={$from}&symbols={$to}";
     $json = @file_get_contents($url);
 
-    if ($json === false) return errorResponse($response, 502, "External exchange API unavailable");
+    if ($json === false) {
+        return errorResponse($response, 502, "External exchange API unavailable");
+    }
 
     $data = json_decode($json, true);
-    if (!isset($data['rates'][$to])) return errorResponse($response, 400, "Target currency not supported");
+    if (!isset($data['rates'][$to])) {
+        return errorResponse($response, 400, "Target currency not supported");
+    }
 
     $rate = (float)$data['rates'][$to];
     $converted = round($balance * $rate, 2);
 
-    $response->getBody()->write(json_encode([
-        'account_id' => $accountId, 'provider' => 'Frankfurter', 'conversion_type' => 'fiat',
-        'from_currency' => $from, 'to_currency' => $to, 'original_balance' => $balance,
-        'converted_balance' => $converted, 'rate' => $rate, 'date' => $data['date'] ?? null
-    ]));
-    return $response->withHeader('Content-Type', 'application/json');
+    // Inizia una transazione per aggiornare valuta e saldo
+    $mysqli->begin_transaction();
+    try {
+        // 1. Aggiorna la valuta dell'account
+        $updateCurrencyStmt = $mysqli->prepare("UPDATE accounts SET currency = ? WHERE id = ?");
+        if (!$updateCurrencyStmt) {
+            throw new Exception("Failed to prepare currency update: " . $mysqli->error);
+        }
+        $updateCurrencyStmt->bind_param('si', $to, $accountId);
+        $updateCurrencyStmt->execute();
+
+        // 2. Aggiungi una transazione di conversione
+        $insertTransactionStmt = $mysqli->prepare("
+            INSERT INTO transactions (account_id, type, amount, description, balance_after)
+            VALUES (?, 'conversion', 0, ?, ?)
+        ");
+        if (!$insertTransactionStmt) {
+            throw new Exception("Failed to prepare transaction insert: " . $mysqli->error);
+        }
+        $description = "Currency conversion from {$from} to {$to} at rate {$rate}";
+        $insertTransactionStmt->bind_param('isd', $accountId, $description, $converted);
+        $insertTransactionStmt->execute();
+
+        $mysqli->commit();
+
+        // Restituisci la risposta
+        $response->getBody()->write(json_encode([
+            'account_id' => $accountId,
+            'provider' => 'Frankfurter',
+            'conversion_type' => 'fiat',
+            'from_currency' => $from,
+            'to_currency' => $to,
+            'original_balance' => $balance,
+            'converted_balance' => $converted,
+            'rate' => $rate,
+            'date' => $data['date'] ?? null,
+            'message' => "Currency updated to {$to} and balance converted."
+        ]));
+        return $response->withHeader('Content-Type', 'application/json');
+    } catch (Exception $e) {
+        $mysqli->rollback();
+        return errorResponse($response, 500, "Failed to update account: " . $e->getMessage());
+    }
 });
 
 // GET Conversione Crypto (Binance) - Sviluppato seguendo la logica della traccia
- $app->get('/accounts/{id}/balance/convert/crypto', function (Request $request, Response $response, array $args) use ($mysqli) {
+$app->get('/accounts/{id}/balance/convert/crypto', function (Request $request, Response $response, array $args) use ($mysqli) {
     $accountId = (int)$args['id'];
     $params = $request->getQueryParams();
     $toCrypto = strtoupper($params['to'] ?? '');
 
-    if (!$toCrypto) return errorResponse($response, 400, "Missing target crypto (e.g. BTC)");
+    if (!$toCrypto) {
+        return errorResponse($response, 400, "Missing target crypto (e.g. BTC)");
+    }
 
-    $account = $mysqli->query("SELECT id, currency FROM accounts WHERE id = $accountId")->fetch_assoc();
-    if (!$account) return errorResponse($response, 404, "Account not found");
+    // Recupera l'account in modo sicuro
+    $stmt = $mysqli->prepare("SELECT id, currency FROM accounts WHERE id = ?");
+    if (!$stmt) {
+        return errorResponse($response, 500, "Database error: " . $mysqli->error);
+    }
+    $stmt->bind_param('i', $accountId);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $account = $result->fetch_assoc();
+
+    if (!$account) {
+        return errorResponse($response, 404, "Account not found");
+    }
 
     $fromCurrency = strtoupper($account['currency']);
     $balance = getCurrentBalance($mysqli, $accountId);
 
     // Costruisco il simbolo (es. BTC + EUR = BTCEUR)
     $marketSymbol = $toCrypto . $fromCurrency;
-    
+
     // Chiamata API Binance (Spot ticker price)
     $url = "https://api.binance.com/api/v3/ticker/price?symbol=" . $marketSymbol;
     $json = @file_get_contents($url);
@@ -290,44 +375,66 @@ if ($mysqli->connect_error) {
     }
 
     $price = (float)$data['price'];
-    
-    // Se il saldo è 0, evito divisioni per zero
     $convertedAmount = $balance > 0 ? $balance / $price : 0;
     $convertedAmount = round($convertedAmount, 8);
 
-    $response->getBody()->write(json_encode([
-        'account_id' => $accountId,
-        'provider' => 'Binance',
-        'conversion_type' => 'crypto',
-        'from_currency' => $fromCurrency,
-        'to_crypto' => $toCrypto,
-        'market_symbol' => $marketSymbol,
-        'original_balance' => $balance,
-        'price' => $price,
-        'converted_amount' => $convertedAmount
-    ]));
-    return $response->withHeader('Content-Type', 'application/json');
+    // Inizia una transazione per aggiornare valuta e saldo
+    $mysqli->begin_transaction();
+    try {
+        // 1. Aggiorna la valuta dell'account
+        $updateCurrencyStmt = $mysqli->prepare("UPDATE accounts SET currency = ? WHERE id = ?");
+        if (!$updateCurrencyStmt) {
+            throw new Exception("Failed to prepare currency update: " . $mysqli->error);
+        }
+        $updateCurrencyStmt->bind_param('si', $toCrypto, $accountId);
+        $updateCurrencyStmt->execute();
+
+        // 2. Aggiungi una transazione di conversione
+        $insertTransactionStmt = $mysqli->prepare("
+            INSERT INTO transactions (account_id, type, amount, description, balance_after)
+            VALUES (?, 'conversion', 0, ?, ?)
+        ");
+        if (!$insertTransactionStmt) {
+            throw new Exception("Failed to prepare transaction insert: " . $mysqli->error);
+        }
+        $description = "Currency conversion from {$fromCurrency} to {$toCrypto} at price {$price}";
+        $insertTransactionStmt->bind_param('isd', $accountId, $description, $convertedAmount);
+        $insertTransactionStmt->execute();
+
+        $mysqli->commit();
+
+        // Restituisci la risposta
+        $response->getBody()->write(json_encode([
+            'account_id' => $accountId,
+            'provider' => 'Binance',
+            'conversion_type' => 'crypto',
+            'from_currency' => $fromCurrency,
+            'to_crypto' => $toCrypto,
+            'market_symbol' => $marketSymbol,
+            'original_balance' => $balance,
+            'price' => $price,
+            'converted_amount' => $convertedAmount,
+            'message' => "Currency updated to {$toCrypto} and balance converted."
+        ]));
+        return $response->withHeader('Content-Type', 'application/json');
+    } catch (Exception $e) {
+        $mysqli->rollback();
+        return errorResponse($response, 500, "Failed to update account: " . $e->getMessage());
+    }
 });
 
 // ======================================================================
 // FUNZIONI HELPER
 // ======================================================================
 
-function getCurrentBalance($mysqli, $accountId): float {
-    $stmt = $mysqli->prepare("
-        SELECT COALESCE(SUM(CASE WHEN type = 'deposit' THEN amount ELSE 0 END), 0) -
-               COALESCE(SUM(CASE WHEN type = 'withdrawal' THEN amount ELSE 0 END), 0) AS balance
-        FROM transactions WHERE account_id = ?
-    ");
+function getCurrentBalance(mysqli $mysqli, int $accountId): float
+{
+    $stmt = $mysqli->prepare("SELECT balance_after FROM transactions WHERE account_id = ? ORDER BY id DESC LIMIT 1");
     $stmt->bind_param('i', $accountId);
     $stmt->execute();
-    $row = $stmt->get_result()->fetch_assoc();
-    return (float)($row['balance'] ?? 0);
+    $result = $stmt->get_result();
+    $row = $result->fetch_assoc();
+    return $row ? (float)$row['balance_after'] : 0.0;
 }
 
-function errorResponse(Response $response, int $code, string $message): Response {
-    $response->getBody()->write(json_encode(['error' => $message]));
-    return $response->withHeader('Content-Type', 'application/json')->withStatus($code);
-}
-
- $app->run();
+$app->run();
